@@ -5,4 +5,4 @@
 
 2 - `DEApipeline.Rmd` runs the Differential Expression Analysi. Count matrix and metadata files are available as supplementary data of the manuscript.
 
-3 - `GeneCategories_piechart.R` uses the `mbovis_categories.csv` and the common upregulation files produced by `DEApipeline.Rmd`
+3 - `GeneCategories_piechart.R` uses the `mbovis_categories.csv` and the common regulation files produced by `DEApipeline.Rmd`

@@ -1,5 +1,5 @@
 ## PhoPR_manuscript
-Code and data used for the PhoPR manuscript comparing the expression of M. tb and M. bovis PhoPR orthologues
+### Code and data used for the PhoPR manuscript comparing the expression of M. tb and M. bovis PhoPR orthologues
 ------------------------------------------------------------------------------------------------------------
 1 - `DataProcessingRNAseq.py` is the file to process the raw sequencing files, available at the NCBI Sequence Read Archive (SRA) under the BioProject ID PRJNA1129457.
 

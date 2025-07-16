@@ -1,0 +1,794 @@
+---
+title: "RNASeq PhoPR KO tuberculosis"
+author: "Jesus Urtasun LMS & Imperial Collega London; jurtasun@ic.ac.uk"
+author: "Josemari Urtasun - VU Amsterdam; j.m.urtasunelizari@vu.nl"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  rmdformats::robobook:
+    self_contained: true
+    code_folding: hide
+    thumbnails: false
+    lightbox: true
+    gallery: false
+    highlight: tango
+    number_sections: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Data source
+
+## Project description
+
+In this analysis we aim to study the different effect of the PhoPR system in M.bovis and M.tuberculosis. For this purpose, M.bovis PhoPR KO samples have been constructed and complemented with either the PhoPR from M.bovis or the PhoPR of M.tuberculosis. This dataset is composed by a total of 12 samples, WT, phoPR-KO, phoPR-KO::phoPRbovis, phoPRKO::phoPRtuberculosis.
+
+## Analysis folder on network drive
+
+/Volumes/bioinfomatics$/jurtasun/Projects/Tuberculosis/bulkRNASeq_mbLT708304_phopr
+
+## Fastqc and alignment results
+
+* Reads were aligned to mb LT708304 using Bowtie2
+
+
+# RNAseq analysis
+
+```{r import, cache = T, echo = F, eval = T, warnings = F, messages = F, results = 'asis'}
+
+# Import libraries - R data manipulation
+suppressPackageStartupMessages(library(here))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(reshape2))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(knitr))
+# suppressPackageStartupMessages(library(DT))
+# suppressPackageStartupMessages(library(edgeR))
+suppressPackageStartupMessages(library(patchwork))
+suppressPackageStartupMessages(library(scales))
+suppressPackageStartupMessages(library(openxlsx))
+suppressPackageStartupMessages(library(ggplot2))
+#suppressPackageStartupMessages(library(factoextra))
+suppressPackageStartupMessages(library(gplots))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(circlize))
+#suppressPackageStartupMessages(library(svglite))
+
+# Import libraries - SDM and PCA
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(pcaExplorer))
+suppressPackageStartupMessages(library(patchwork))
+
+# Import libraries - RNASeq analysis
+# suppressPackageStartupMessages(library(GenomicFeatures))
+suppressPackageStartupMessages(library(biomaRt))
+suppressPackageStartupMessages(library(Biobase))
+suppressPackageStartupMessages(library(GEOquery))
+suppressPackageStartupMessages(library(Rsubread))
+suppressPackageStartupMessages(library(DESeq2))
+# suppressPackageStartupMessages(library(DEGreport))
+
+# Import libraries - GO
+#suppressPackageStartupMessages(library(DOSE))
+#suppressPackageStartupMessages(library(clusterProfiler))
+#suppressPackageStartupMessages(library(enrichplot))
+#suppressPackageStartupMessages(library(ggnewscale))
+#suppressPackageStartupMessages(library(org.Hs.eg.db))
+# suppressPackageStartupMessages(library(AnnotationDbi))
+# suppressPackageStartupMessages(library("simplifyEnrichment"))
+
+# Set working directory
+workdir <- "/path/to/workingdirectory/"
+setwd(workdir)
+
+# Define !in operator
+'%!in%' <- function(x, y) !('%in%' (x, y))
+
+```
+
+
+## Count matrix and normalization
+
+* Prepare count matrix for visualization with Sample Distance Matrix (SDM) and Principal Component Analysis (PCA)
+* Normalization is performed by DESEq2. Reference:
+
+      + Love, M.I., Huber, W., Anders, S. (2014) Moderated estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology, 15:550. https://doi.org/10.1186/s13059-014-0550-8
+
+```{r count, eval = T, echo = T, fig.height = 8, fig.width = 8, cache = TRUE, messages = F, results = 'asis', warnings = F}
+
+# Look with accession number
+# https://www.ebi.ac.uk/ena/browser/view/LT708304
+
+# # Annotation file
+#annotation_path <- "/home/josemari/Desktop/PhoPR_paper/annotation/LT708304_updated_fixed.gff"
+
+# Prepare count matrix
+raw_counts <- as.data.frame(read.csv(paste0(workdir, "/data/raw_counts.csv")))
+rownames(raw_counts) <- raw_counts$X  # JM Rename / check locus tag
+raw_counts$X <- NULL
+raw_counts <- raw_counts[rowSums(raw_counts) > 0, ] # JM which ones
+
+# Prepare meta data
+meta_data <- read.csv(paste0(workdir, "/data/meta_data.csv")); meta_data$Group <- as.factor(meta_data$Group)
+all(colnames(raw_counts) == meta_data$SampleID)
+
+# Process names
+colnames(raw_counts) <- gsub("_srtd.bam", "", colnames(raw_counts))
+rownames(raw_counts) <- gsub("BQ2027_", "", rownames(raw_counts))
+meta_data$SampleID <- gsub("_srtd.bam", "", meta_data$SampleID)
+meta_data$SampleID <- paste0(meta_data$Group, "_", meta_data$SampleID)
+colnames(raw_counts) <- meta_data$SampleID
+
+# # Prepare a dds object - already specify design matrix
+dds <- DESeq2::DESeqDataSetFromMatrix(raw_counts, meta_data, ~Group)
+dds <- DESeq2::estimateSizeFactors(dds)
+rld <- DESeq2::rlog(dds)
+save(dds, file = "data/dds.RData")
+save(rld, file = "data/rld.RData")
+load("data/dds.RData")
+load("data/rld.RData")
+
+# Get gene annotation from biomaRt
+mart <- useMart("ensembl", dataset = "scerevisiae_gene_ensembl")
+datasets <- listDatasets(mart)
+datasets[which(datasets[, 1] == "scerevisiae_gene_ensembl"), ]; head(listAttributes(mart))
+# Get gene annotation from biomart
+bm_chr <- getBM(attributes = c("ensembl_gene_id", "external_gene_name", "chromosome_name"),
+                 filters = "external_gene_name", values = rownames(raw_counts), mart = mart)
+save(bm_chr, file = "data/bm_chr.RData")
+load("data/bm_chr.RData")
+
+```
+
+
+## Sample Distance Matrix (SDM) {.tabset}
+
+* Study similarity among different biological replicates
+* Samples more similar will cluster together in the SDM by means of Euclidean distance
+* Reference for SDM:
+
+      + Becker, R. A., Chambers, J. M. and Wilks, A. R. (1988) The New S Language. Wadsworth & Brooks/Cole.
+      + Mardia, K. V., Kent, J. T. and Bibby, J. M. (1979) Multivariate Analysis. Academic Press.
+      + Borg, I. and Groenen, P. (1997) Modern Multidimensional Scaling. Theory and Applications. Springer.
+
+```{r sdm, eval = T, echo = F, fig.height = 5, fig.width = 6, cache = TRUE, messages = F, results = 'asis', warnings = F}
+
+# Random seed
+set.seed(123)
+
+# Compute sample distance matrix
+rld_counts <- assay(rld)
+sdm <- as.matrix(dist(t(rld_counts)))
+
+# Color palette
+cb_colors <- colorRampPalette(brewer.pal(4, "Set1"))(4)
+cb_cols <- c("springgreen2", "red2", "royalblue1", "darkorchid1") # Color palette: https://bookdown.org/hneth/ds4psy/D-3-apx-colors-basics.html
+
+# Color by group
+group_col <- cb_cols
+names(group_col) <- levels(rld$Group)
+names(group_col) <- c("WT", "Dpho", "MczBv", "MczTb")
+
+# Set annotations
+col_ha = HeatmapAnnotation(Group = rld$Group, col = list(Group = group_col))
+row_ha = rowAnnotation(Group = rld$Group, col = list(Group = group_col))
+
+# Create heatmap
+heatmap_sdm <- Heatmap(sdm,
+      row_title = NULL,
+      left_annotation = row_ha,
+      top_annotation = col_ha,
+      cluster_rows = T,
+      cluster_columns = T,
+      show_row_names = T,
+      show_column_names = T,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_names_gp = gpar(fontsize = 6),
+      column_names_gp = gpar(fontsize = 6),
+      column_title = NULL,
+      show_heatmap_legend = F)
+      # col = colorpanel(200, "black", "white"))
+
+draw(heatmap_sdm, merge_legend = TRUE)
+# pdf(paste(workdir, "/qc/heatmap_sdm.pdf", sep = ""), width = 10, height = 10)
+# draw(heatmap_sdm, merge_legend = TRUE)
+# dev.off()
+
+```
+
+## Principal Component Analysis (PCA) {.tabset}
+
+* Study correlation between different samples
+* Correlated samples will cluster together along PC1 and PC2
+* Reference for PCA:
+
+      + Becker, R. A., Chambers, J. M. and Wilks, A. R. (1988) The New S Language. Wadsworth & Brooks/Cole.
+      + Mardia, K. V., Kent, J. T. and Bibby, J. M. (1979) Multivariate Analysis. Academic Press.
+      + Borg, I. and Groenen, P. (1997) Modern Multidimensional Scaling. Theory and Applications. Springer.
+
+```{r pca1, eval = T, echo = F, fig.height = 9, fig.width = 6.5, cache = T, messages = F, results = 'asis', warnings = F}
+
+# Select features of interest
+features_int <- c("Group")
+
+# Iterate over the features of interest
+for (i in 1:length(features_int)) {
+
+      feature_i <- features_int[i]
+      out_string <- paste("Coloured by ", feature_i, sep = "")
+
+      cat("\n###", out_string)
+      cat("\n")
+
+      col_of_int <- which(colnames(colData(rld)) == feature_i)
+
+      # # PCA plot
+      # pca_plot <- pcaplot(rld, ntop = 1000,
+      #            intgroup = colnames(colData(rld))[col_of_int],
+      #            text_labels = F,
+      #            ellipse = F, point_size = 2,
+      #            pcX = 1, pcY = 2,
+      #            title = paste("PCA (colour by", feature_i, ")"))
+      # print(pca_plot)
+      # 
+      # # PCA plot - samples labeled
+      # pca_label <- pcaplot(rld, ntop = 1000,
+      #            intgroup = colnames(colData(rld))[col_of_int],
+      #            text_labels = T,
+      #            ellipse = F, point_size = 2,
+      #            pcX = 1, pcY = 2,
+      #            title = paste("PCA (colour by", feature_i, ")"))
+      # pca_label
+
+      # Perform PCA
+      pca_data <- prcomp(t(assay(rld)))
+      pca_scores <- as.data.frame(pca_data$x)
+      
+      # Get groups from meta data
+      groups <- colData(rld)$Group
+      pca_groups <- cbind(pca_scores, groups)
+      pca_groups <- as.data.frame(pca_groups)
+      
+      # Plot PCA using ggplot2
+      pca_plot <- ggplot(pca_groups, aes(x = PC1, y = PC2, color = groups)) + geom_point() +
+            labs(x = paste0("PC1 (", round(pca_data$sdev[1] / sum(pca_data$sdev) * 100, 2), "%)"),
+                  y = paste0("PC2 (", round(pca_data$sdev[2] / sum(pca_data$sdev) * 100, 2), "%)")) +
+            theme_minimal() +
+            theme(plot.title = element_text(hjust = 0.5, color = "black", size = 14, face = "bold"),
+                  panel.background = element_rect(fill = "white"),
+                  axis.text = element_text(color = "white"),
+                  legend.text = element_text(color = "black"))
+      print(pca_plot)
+
+      # Plot PCA using ggplot2
+      pca_label <- ggplot(pca_groups, aes(x = PC1, y = PC2, color = groups)) + geom_point() +
+            geom_text(aes(label = rownames(pca_groups)),
+                size = 3, vjust = -0.5, hjust = 1.5, nudge_x = 0.1, nudge_y = 0.1, check_overlap = TRUE) +
+            labs(x = paste0("PC1 (", round(pca_data$sdev[1] / sum(pca_data$sdev) * 100, 2), "%)"),
+                  y = paste0("PC2 (", round(pca_data$sdev[2] / sum(pca_data$sdev) * 100, 2), "%)")) +
+            theme_minimal() +
+            theme(plot.title = element_text(hjust = 0.5, color = "black", size = 14, face = "bold"),
+                  panel.background = element_rect(fill = "white"),
+                  axis.text = element_text(color = "white"),
+                  legend.text = element_text(color = "black"))
+      print(pca_label)
+      
+      # # Save PDF file
+      # ggsave(paste0(workdir, "/qc/pca_group.pdf"), plot = pca_plot, width = 10, height = 10, dpi = 500)
+      # ggsave(paste0(workdir, "/qcA/pca_group_label.pdf"), plot = pca_label, width = 10, height = 10, dpi = 500)
+      
+      cat("\n")
+
+}
+
+```
+
+# Differential Expression analysis
+
+## DE on different cell types {.tabset}
+
+* Comparison of interest
+
+* Define DE genes with thresholds pvalue = 0.05 and abs(log2FC) > 1
+
+* DE results can be downloaded here [[...]]
+
+```{r DE1, cache = T, echo = T, eval = T, warnings = F, messages = F, results = 'asis', fig.height = 4.5, fig.width = 6.5}
+
+# Prepare objects for DE
+norm_counts_de <- counts(dds, normalized = T)
+col_data_de <- colData(dds)
+
+# Comparisons of interest for DE analysis
+comp_int <- list()
+comp_int[[1]] <- c("Group", "Dpho", "WT")
+comp_int[[2]] <- c("Group", "MczBv", "WT")
+comp_int[[3]] <- c("Group", "MczTb", "WT")
+comp_int[[4]] <- c("Group", "MczTb", "MczBv")
+names(comp_int) <- c("WT_vs_Dpho", "WT_vs_MczBv", "WT_vs_MczTb", "MczTb_vs_MczBv")
+
+# Set design matrix for DE
+design(dds) <- ~Group
+dds <- DESeq(dds)
+
+# Iterate over comparisons of interest
+for (i in 1:length(comp_int)) {
+
+      # Get comparisons of interest
+      comp_i <- comp_int[[i]]
+      comp_i_name <- paste(comp_i[2], "_vs_", comp_i[3], sep = "")
+      comp_i_keyword <- gsub("(.+)(_.+)", "\\1", comp_i[2])
+      cat("\n###", comp_i_name, "{.tabset}")
+      cat("\n")
+
+      # Get DESeq results for current comparison
+      res <- na.omit(results(dds, alpha = 0.05, contrast = comp_i))
+      res <- res[res$padj < 0.05, ]
+      res$DE <- ifelse(abs(res$log2FoldChange) > 1, "de", "no")
+      res[res$DE == "de", ]$DE <- ifelse(res[res$DE == "de", ]$log2FoldChange > 0, "up", "down")
+            
+      # Print number of DE genes
+      cat("\nup DE: ", table(res$DE)[2], "\n")
+      cat("\ndown DE: ", table(res$DE)[1], "\n")
+
+      # Add gene name
+      res_sym <- as.data.frame(res)
+      res_sym <- res_sym[, -c(1, 4, 5)]
+      res_sym$GeneID <- rownames(res_sym)
+      # res_sym <- merge(bm_chr[, c(1, 2)], res_sym, by.x = "ensembl_gene_id", by.y = "GeneID")
+      # colnames(res_sym) <- gsub("ensembl_gene_id", "EnsemblID", colnames(res_sym))
+      # colnames(res_sym) <- gsub("external_gene_name", "GeneName", colnames(res_sym))
+      res_sym <- as.data.frame(res_sym[order(-res_sym$log2FoldChange, res_sym$padj), ])
+      res_sym <- res_sym[, c(length(colnames(res_sym)), 1:length(colnames(res_sym))-1)]
+      rownames(res_sym) <- NULL
+      
+      # Write output data - pairwise comparisons
+      #write.csv(res_sym, paste0(workdir, "/results/de_", comp_i_name, ".csv"), row.names = F)
+
+}
+
+
+```
+
+## Volcano plots
+
+* Comparison of interest
+
+* Define DE genes with thresholds pvalue = 0.05 and log2FC > 1
+
+* DE results can be downloaded from here [[...]]
+
+```{r DE2, cache = T, echo = T, eval = T, warnings = F, messages = F, fig.height = 8, fig.width = 12, results = "asis"}
+
+# Add information to DE results
+res <- read.csv(paste0(workdir, "/results/de_Dpho_vs_WT.csv"));
+res <- res[-res$padj != 0, ]; res$DE <- "no"
+res$DE[res$log2FoldChange > 0 & res$padj < 0.01] <- "up"
+res$DE[res$log2FoldChange < 0 & res$padj < 0.01] <- "down"
+# Label top 10 DE genes for plot
+res$DE_label <- NA
+res$DE_label[res$DE != "no"] <- res$GeneID[res$DE != "no"]
+res <- res[order(abs(res$log2FoldChange), decreasing = TRUE), ]
+res$DE_label[15:length(res$DE_label)] <- NA
+
+# Volcano plot
+volcano1 <- ggplot(data = res, aes(x = log2FoldChange, y = -log10(padj), col = DE, label = DE_label)) + 
+      xlab("log2FC") +
+      ylab("-log10(pval)") +
+      geom_point() +
+      geom_text_repel() +
+      # xlim(c(-9, 9)) +
+      # ylim(c(0, 125)) +
+      xlim(c(-10, 10)) +
+      # ylim(c(0, 12)) +
+      scale_color_manual(values = c("darkred", "black", "darkgreen")) +
+      theme_minimal()
+volcano1
+# pdf(paste(workdir, "/de_analysis/volcano_WT_vs_Dpho.pdf", sep = ""), width = 10, height = 10)
+# volcano1
+# dev.off()
+
+# Add information to DE results
+res <- read.csv(paste0(workdir, "/results/de_MczBv_vs_WT.csv"));
+res <- res[-res$padj != 0, ]; res$DE <- "no"
+res$DE[res$log2FoldChange > 0 & res$padj < 0.01] <- "up"
+res$DE[res$log2FoldChange < 0 & res$padj < 0.01] <- "down"
+# Label top 10 DE genes for plot
+res$DE_label <- NA
+res$DE_label[res$DE != "no"] <- res$GeneID[res$DE != "no"]
+res <- res[order(abs(res$log2FoldChange), decreasing = TRUE), ]
+res$DE_label[15:length(res$DE_label)] <- NA
+
+# Volcano plot
+volcano2 <- ggplot(data = res, aes(x = log2FoldChange, y = -log10(padj), col = DE, label = DE_label)) + 
+      xlab("log2FC") +
+      ylab("-log10(pval)") +
+      geom_point() +
+      geom_text_repel() +
+      xlim(c(-10, 10)) +
+      # ylim(c(0, 125)) +
+      # xlim(c(-0.75, 0.75)) +
+      # ylim(c(0, 12)) +
+      scale_color_manual(values = c("darkred", "black", "darkgreen")) +
+      theme_minimal()
+volcano2
+# pdf(paste(workdir, "/DE_analysis/volcano_MczBv_vs_WT.pdf", sep = ""), width = 10, height = 10)
+# volcano2
+# dev.off()
+
+# Add information to DE results
+res <- read.csv(paste0(workdir, "/results/de_MczTb_vs_WT.csv"));
+res <- res[-res$padj != 0, ]; res$DE <- "no"
+res$DE[res$log2FoldChange > 0 & res$padj < 0.01] <- "up"
+res$DE[res$log2FoldChange < 0 & res$padj < 0.01] <- "down"
+# Label top 10 DE genes for plot
+res$DE_label <- NA
+res$DE_label[res$DE != "no"] <- res$GeneID[res$DE != "no"]
+res <- res[order(abs(res$log2FoldChange), decreasing = TRUE), ]
+res$DE_label[15:length(res$DE_label)] <- NA
+
+# Volcano plot
+volcano3 <- ggplot(data = res, aes(x = log2FoldChange, y = -log10(padj), col = DE, label = DE_label)) + 
+      xlab("log2FC") +
+      ylab("-log10(pval)") +
+      geom_point() +
+      geom_text_repel() +
+      xlim(c(-10, 10)) +
+      # ylim(c(0, 125)) +
+      # xlim(c(-0.75, 0.75)) +
+      # ylim(c(0, 12)) +
+      scale_color_manual(values = c("darkred", "black", "darkgreen")) +
+      theme_minimal()
+volcano3
+# pdf(paste(workdir, "/de_analysis/volcano_MczTb_vs_WT.pdf", sep = ""), width = 10, height = 10)
+# volcano3
+# dev.off()
+
+# Add information to DE results
+res <- read.csv(paste0(workdir, "/results/de_MczTb_vs_MczBv.csv"));
+res <- res[-res$padj != 0, ]; res$DE <- "no"
+res$DE[res$log2FoldChange > 1.5 & res$padj < 0.01] <- "up"
+res$DE[res$log2FoldChange < -1.5 & res$padj < 0.01] <- "down"
+# Label top 10 DE genes for plot
+res$DE_label <- NA
+res$DE_label[res$DE != "no"] <- res$GeneID[res$DE != "no"]
+res <- res[order(abs(res$log2FoldChange), decreasing = TRUE), ]
+res$DE_label[15:length(res$DE_label)] <- NA
+
+# Volcano plot
+volcano4 <- ggplot(data = res, aes(x = log2FoldChange, y = -log10(padj), col = DE, label = DE_label)) + 
+      xlab("log2FC") +
+      ylab("-log10(pval)") +
+      geom_point() +
+      geom_text_repel() +
+      xlim(c(-5, 5)) +
+      # ylim(c(0, 125)) +
+      # xlim(c(-0.75, 0.75)) +
+      # ylim(c(0, 12)) +
+      scale_color_manual(values = c("darkred", "black", "darkgreen")) +
+      theme_minimal()
+volcano4
+# pdf(paste(workdir, "/DE_analysis/volcano_MczTb_vs_MczBv.pdf", sep = ""), width = 10, height = 10)
+# volcano4
+# dev.off()
+
+```
+
+## Venn diagram
+
+* Venn diagram for pairwise comparisons of interest
+
+```{r venn1 , cache = T, echo = T, eval = T, warnings = F, messages = F, results = 'asis', fig.width = 4.5, fig.height = 5}
+
+# Load the libraries
+suppressPackageStartupMessages(library(VennDiagram))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(tidyverse))
+
+# Load your data tables (replace 'path_to_your_file' with actual file paths)
+res1 <- read.csv("results/de_Dpho_vs_WT.csv")
+res2 <- read.csv("results/de_MczBv_vs_WT.csv")
+res3 <- read.csv("results/de_MczTb_vs_WT.csv")
+res4 <- read.csv("results/de_MczTb_vs_MczBv.csv")
+
+# Identify upregulated and downregulated genes
+up1 <- res1 %>% filter(log2FoldChange > 1) %>% pull(GeneID)
+down1 <- res1 %>% filter(log2FoldChange < -1) %>% pull(GeneID)
+up2 <- res2 %>% filter(log2FoldChange > 1) %>% pull(GeneID)
+down2 <- res2 %>% filter(log2FoldChange < -1) %>% pull(GeneID)
+up3 <- res3 %>% filter(log2FoldChange > 1) %>% pull(GeneID)
+down3 <- res3 %>% filter(log2FoldChange < -1) %>% pull(GeneID)
+up4 <- res4 %>% filter(log2FoldChange > 1) %>% pull(GeneID)
+down4 <- res4 %>% filter(log2FoldChange < -1) %>% pull(GeneID)
+
+# Define colors
+comp_color <- c("red2", "blue3", "gold1")
+
+# Generate Venn Diagram for up-regulated genes
+#pdf("results/intersect_up_de_venn.pdf")
+venn.up <- venn.diagram(
+      x = list(Up1 = up1, Up2 = up2, Up3 = up3),
+      category.names = c("Dpho_vs_WT", "MczBv_vs_WT", "MczTb_vs_WT"),
+      filename = NULL,
+      output = TRUE,
+      fill = comp_color
+)
+grid.draw(venn.up)
+#dev.off()
+
+# Generate Venn Diagram for down-regulated genes
+#pdf("de_analysis/intersect_down_de_venn.pdf")
+venn.down <- venn.diagram(
+      x = list(Down1 = down1, Down2 = down2, Down3 = down3),
+      category.names = c("Dpho_vs_WT", "MczBv_vs_WT", "MczTb_vs_WT"),
+      filename = NULL,
+      output = TRUE,
+      fill = comp_color
+)
+grid.draw(venn.down)
+#dev.off()
+
+# Get common genes
+common_up <- intersect(intersect(up1, up2), intersect(up1, up3))
+common_down <- intersect(intersect(down1, down2), intersect(down1, down3))
+write.table(common_up, file = "results/intersect_up_de_genes.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(common_down, file = "results/intersect_down_de_genes.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+
+# Get common for complemented mutants.
+commonup <- setdiff(intersect(up2, up3), intersect(intersect(up1, up2), intersect(up1, up3)))
+commondown <- setdiff(intersect(down2, down3), intersect(intersect(down1, down2), intersect(down1, down3)))
+
+```
+
+* Heatmap in high resolution can be downloaded here [[...]]
+
+```{r heatmaps, cache = T, echo = T, eval = T, warnings = F, messages = F, fig.height = 8, fig.width = 12, results = "asis"}
+
+# Load data
+load("data/rld.RData")
+
+# Gene lists for heatmap
+my_genes1 <- c("MB3156c", "MB3157c", "MB2058", "MB2057c", "MB2656", "MB3154c", "MB2659c", "MB2660c", 
+               "MB2661", "MB2666c", "MB3258c", "MB2030c", "MB2020", "MB0584", "MB2356c", "MB0585") # DosR regulon
+my_genes2 <- c("MB2971c", "MB2972c", "MB2973c", "MB2974c") # pks1
+my_genes3 <- c("MB3850c", "MB3851", "MB3252", "MB3853c", "MB3854c", "MB3855c", "MB3856") # pks2
+my_genes4 <- c("MB1213", "MB1214", "MB1215", "MB1216c", "MB1217c") # pks3 / pks4
+
+my_genes5 <- c("MB1538", "MB1539", "MB1540", "MB1541", "MB1542c", "MB1543c", "MB2642c", "MB2211c") # pimf
+my_genes6 <- c("MB3280c", "MB3279c", "MB3278c", "MB1086") # rubredoxins
+my_genes7 <- c("MB3110", "MB3111", "MB3112", "MB3113", "MB3114", "MB3115", "MB3116") # myma
+my_genes8 <- c("MB2267", "MB2268", "MB2269", "MB2270", "MB2271") # kasb
+
+my_genes9 <- c("MB1548", "MB1549c", "MB1550", "MB1551", "MB1552", "MB1553c", "MB1554c", "MB1555c", "MB1556") # pks5 / mmpl12
+my_genes10 <- c("MB0406c", "MB0407", "MB0408c", "MB0409c", "MB0410c", "MB0411", "MB0412", "MB0413") # pks6 / mmpl1
+my_genes11 <- c("MB2955", "MB2956", "MB2957", "MB2958", "MB2959", "MB2960", "MB2961", "MB2962",
+                "MB2963", "MB2964", "MB2965c", "MB2966", "MB2967") # faD26
+
+# Subset genes of interest
+rld_sym <- as.data.frame(assay(rld));
+
+# Subset norm counts for the genes of interest
+rld_sym1 <- rld_sym[rownames(rld_sym) %in% my_genes1, ]; rld_sym2 <- rld_sym[rownames(rld_sym) %in% my_genes2, ]
+rld_sym3 <- rld_sym[rownames(rld_sym) %in% my_genes3, ]; rld_sym4 <- rld_sym[rownames(rld_sym) %in% my_genes4, ]
+rld_sym5 <- rld_sym[rownames(rld_sym) %in% my_genes5, ]; rld_sym6 <- rld_sym[rownames(rld_sym) %in% my_genes6, ]
+rld_sym7 <- rld_sym[rownames(rld_sym) %in% my_genes7, ]; rld_sym8 <- rld_sym[rownames(rld_sym) %in% my_genes8, ]
+rld_sym9 <- rld_sym[rownames(rld_sym) %in% my_genes9, ]; rld_sym10 <- rld_sym[rownames(rld_sym) %in% my_genes10, ]
+rld_sym11 <- rld_sym[rownames(rld_sym) %in% my_genes11, ];
+
+# Heatmaps
+h1 <- Heatmap(as.matrix(rld_sym1),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym1),
+      column_order = colnames(rld_sym1),
+      row_labels = rownames(rld_sym1),
+      column_labels = colnames(rld_sym1),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h1
+# pdf(paste0(workdir, "/heatmaps/heatmap_dosr_regulon.pdf"), width = 10, height = 10)
+# h1
+# dev.off()
+
+# Heatmaps
+h2 <- Heatmap(as.matrix(rld_sym2),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym2),
+      column_order = colnames(rld_sym2),
+      row_labels = rownames(rld_sym2),
+      column_labels = colnames(rld_sym2),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h2
+# pdf(paste0(workdir, "/heatmaps/heatmap_pks1.pdf"), width = 10, height = 10)
+# h2
+# dev.off()
+
+# Heatmaps
+h3 <- Heatmap(as.matrix(rld_sym3),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym3),
+      column_order = colnames(rld_sym3),
+      row_labels = rownames(rld_sym3),
+      column_labels = colnames(rld_sym3),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h3
+# pdf(paste0(workdir, "/heatmaps/heatmap_pks2.pdf"), width = 10, height = 10)
+# h3
+# dev.off()
+
+# Heatmaps
+h4 <- Heatmap(as.matrix(rld_sym4),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym4),
+      column_order = colnames(rld_sym4),
+      row_labels = rownames(rld_sym4),
+      column_labels = colnames(rld_sym4),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h4
+# pdf(paste0(workdir, "/heatmaps/heatmap_pks3.pdf"), width = 10, height = 10)
+# h4
+# dev.off()
+
+# Heatmaps
+h5 <- Heatmap(as.matrix(rld_sym5),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym5),
+      column_order = colnames(rld_sym5),
+      row_labels = rownames(rld_sym5),
+      column_labels = colnames(rld_sym5),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h5
+# pdf(paste0(workdir, "/heatmaps/heatmap_pimf.pdf"), width = 10, height = 10)
+# h5
+# dev.off()
+
+# Heatmaps
+h6 <- Heatmap(as.matrix(rld_sym6),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym6),
+      column_order = colnames(rld_sym6),
+      row_labels = rownames(rld_sym6),
+      column_labels = colnames(rld_sym6),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h6
+# pdf(paste0(workdir, "/heatmaps/heatmap_rubredoxins.pdf"), width = 10, height = 10)
+# h6
+# dev.off()
+
+# Heatmaps
+h7 <- Heatmap(as.matrix(rld_sym7),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym7),
+      column_order = colnames(rld_sym7),
+      row_labels = rownames(rld_sym7),
+      column_labels = colnames(rld_sym7),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h7
+# pdf(paste0(workdir, "/heatmaps/heatmap_myma.pdf"), width = 10, height = 10)
+# h7
+# dev.off()
+
+# Heatmaps
+h8 <- Heatmap(as.matrix(rld_sym8),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym8),
+      column_order = colnames(rld_sym8),
+      row_labels = rownames(rld_sym8),
+      column_labels = colnames(rld_sym8),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h8
+# pdf(paste0(workdir, "/heatmaps/heatmap_kasb.pdf"), width = 10, height = 10)
+# h8
+# dev.off()
+
+#  Heatmaps
+h9 <- Heatmap(as.matrix(rld_sym9),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym9),
+      column_order = colnames(rld_sym9),
+      row_labels = rownames(rld_sym9),
+      column_labels = colnames(rld_sym9),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h9
+# pdf(paste0(workdir, "/heatmaps/heatmap_pks5.pdf"), width = 10, height = 10)
+# h9
+# dev.off()
+
+# Heatmaps
+h10 <- Heatmap(as.matrix(rld_sym10),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym10),
+      column_order = colnames(rld_sym10),
+      row_labels = rownames(rld_sym10),
+      column_labels = colnames(rld_sym10),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h10
+# pdf(paste0(workdir, "/heatmaps/heatmap_pks6.pdf"), width = 10, height = 10)
+# h10
+# dev.off()
+
+# Heatmaps
+h11 <- Heatmap(as.matrix(rld_sym11),
+      name = "Z-score",
+      cluster_rows = F,
+      cluster_columns = F,
+      row_dend_reorder = F,
+      column_dend_reorder = F,
+      row_order = rownames(rld_sym11),
+      column_order = colnames(rld_sym11),
+      row_labels = rownames(rld_sym11),
+      column_labels = colnames(rld_sym11),
+      show_row_names = T, row_names_gp = gpar(fontsize = 7),
+      show_column_names = T, column_names_gp = gpar(fontsize = 5.5),
+      show_heatmap_legend = T)
+h11
+# pdf(paste0(workdir, "/heatmaps/heatmap_fad26.pdf"), width = 10, height = 10)
+# h11
+# dev.off()
+
+```
+
